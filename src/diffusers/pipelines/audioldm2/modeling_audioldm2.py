@@ -19,26 +19,26 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 
-from ...configuration_utils import ConfigMixin, register_to_config
-from ...loaders import UNet2DConditionLoadersMixin
-from ...models.activations import get_activation
-from ...models.attention_processor import (
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.loaders import UNet2DConditionLoadersMixin
+from diffusers.models.activations import get_activation
+from diffusers.models.attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS,
     CROSS_ATTENTION_PROCESSORS,
     AttentionProcessor,
     AttnAddedKVProcessor,
     AttnProcessor,
 )
-from ...models.embeddings import (
+from diffusers.models.embeddings import (
     TimestepEmbedding,
     Timesteps,
 )
-from ...models.modeling_utils import ModelMixin
-from ...models.resnet import Downsample2D, ResnetBlock2D, Upsample2D
-from ...models.transformer_2d import Transformer2DModel
-from ...models.unet_2d_blocks import DownBlock2D, UpBlock2D
-from ...models.unet_2d_condition import UNet2DConditionOutput
-from ...utils import BaseOutput, is_torch_version, logging
+from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.resnet import Downsample2D, ResnetBlock2D, Upsample2D
+from diffusers.models.transformer_2d import Transformer2DModel
+from diffusers.models.unet_2d_blocks import DownBlock2D, UpBlock2D
+from diffusers.models.unet_2d_condition import UNet2DConditionOutput
+from diffusers.utils import BaseOutput, is_torch_version, logging
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -665,15 +665,18 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
         self,
         sample: torch.FloatTensor,
         timestep: Union[torch.Tensor, float, int],
-        encoder_hidden_states: torch.Tensor,
+        encoder_hidden_states_a: torch.Tensor,
+        encoder_hidden_states_b: torch.Tensor,
         class_labels: Optional[torch.Tensor] = None,
         timestep_cond: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
-        encoder_hidden_states_1: Optional[torch.Tensor] = None,
-        encoder_attention_mask_1: Optional[torch.Tensor] = None,
+        encoder_hidden_states_1_a: Optional[torch.Tensor] = None,
+        encoder_hidden_states_1_b: Optional[torch.Tensor] = None,
+        encoder_attention_mask_1_a: Optional[torch.Tensor] = None,
+        encoder_attention_mask_1_b: Optional[torch.Tensor] = None,
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`AudioLDM2UNet2DConditionModel`] forward method.
@@ -741,9 +744,14 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
             encoder_attention_mask = (1 - encoder_attention_mask.to(sample.dtype)) * -10000.0
             encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
 
-        if encoder_attention_mask_1 is not None:
-            encoder_attention_mask_1 = (1 - encoder_attention_mask_1.to(sample.dtype)) * -10000.0
-            encoder_attention_mask_1 = encoder_attention_mask_1.unsqueeze(1)
+        if encoder_attention_mask_1_a is not None:
+            encoder_attention_mask_1_a = (1 - encoder_attention_mask_1_a.to(sample.dtype)) * -10000.0
+            encoder_attention_mask_1_a = encoder_attention_mask_1_a.unsqueeze(1)
+
+        if encoder_attention_mask_1_b is not None:
+            encoder_attention_mask_1_b = (1 - encoder_attention_mask_1_b.to(sample.dtype)) * -10000.0
+            encoder_attention_mask_1_b = encoder_attention_mask_1_b.unsqueeze(1)
+
 
         # 1. time
         timesteps = timestep
@@ -800,7 +808,18 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
 
         # 3. down
         down_block_res_samples = (sample,)
-        for downsample_block in self.down_blocks:
+        for idx, downsample_block in enumerate(self.down_blocks):
+            if idx <=1:
+                encoder_hidden_states = encoder_hidden_states_a
+                encoder_hidden_states_1 = encoder_hidden_states_1_a
+                encoder_attention_mask_1 = encoder_attention_mask_1_a
+            else: 
+                encoder_hidden_states = encoder_hidden_states_b
+                encoder_hidden_states_1 = encoder_hidden_states_1_b
+                encoder_attention_mask_1 = encoder_attention_mask_1_b
+
+
+
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 sample, res_samples = downsample_block(
                     hidden_states=sample,
@@ -819,6 +838,10 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
 
         # 4. mid
         if self.mid_block is not None:
+            encoder_hidden_states = encoder_hidden_states_b
+            encoder_hidden_states_1 = encoder_hidden_states_1_b
+            encoder_attention_mask_1 = encoder_attention_mask_1_b
+
             sample = self.mid_block(
                 sample,
                 emb,
@@ -832,6 +855,15 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
+            if idx <=1:
+                encoder_hidden_states = encoder_hidden_states_b
+                encoder_hidden_states_1 = encoder_hidden_states_1_b
+                encoder_attention_mask_1 = encoder_attention_mask_1_b
+            else: 
+                encoder_hidden_states = encoder_hidden_states_a
+                encoder_hidden_states_1 = encoder_hidden_states_1_a
+                encoder_attention_mask_1 = encoder_attention_mask_1_a
+
             is_final_block = i == len(self.up_blocks) - 1
 
             res_samples = down_block_res_samples[-len(upsample_block.resnets) :]

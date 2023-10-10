@@ -29,18 +29,20 @@ from transformers import (
     T5TokenizerFast,
 )
 
-from ...models import AutoencoderKL
-from ...schedulers import KarrasDiffusionSchedulers
-from ...utils import (
+from diffusers.models import AutoencoderKL
+from diffusers.schedulers import KarrasDiffusionSchedulers
+from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers.schedulers import KarrasDiffusionSchedulers
+from diffusers.utils import (
     is_accelerate_available,
     is_accelerate_version,
     is_librosa_available,
     logging,
     replace_example_docstring,
 )
-from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import AudioPipelineOutput, DiffusionPipeline
-from .modeling_audioldm2 import AudioLDM2ProjectionModel, AudioLDM2UNet2DConditionModel
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.pipelines.pipeline_utils import AudioPipelineOutput, DiffusionPipeline
+from modeling_audioldm2 import AudioLDM2ProjectionModel, AudioLDM2UNet2DConditionModel
 
 
 if is_librosa_available():
@@ -733,7 +735,8 @@ class AudioLDM2Pipeline(DiffusionPipeline):
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
-        prompt: Union[str, List[str]] = None,
+        prompt_1: Union[str, List[str]] = None,
+        prompt_2: Union[str, List[str]] = None,
         audio_length_in_s: Optional[float] = None,
         num_inference_steps: int = 200,
         guidance_scale: float = 3.5,
@@ -853,7 +856,7 @@ class AudioLDM2Pipeline(DiffusionPipeline):
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
-            prompt,
+            prompt_1,
             audio_length_in_s,
             vocoder_upsample_factor,
             callback_steps,
@@ -866,13 +869,43 @@ class AudioLDM2Pipeline(DiffusionPipeline):
             negative_attention_mask,
         )
 
+        self.check_inputs(
+            prompt_2,
+            audio_length_in_s,
+            vocoder_upsample_factor,
+            callback_steps,
+            negative_prompt,
+            prompt_embeds,
+            negative_prompt_embeds,
+            generated_prompt_embeds,
+            negative_generated_prompt_embeds,
+            attention_mask,
+            negative_attention_mask,
+        )
+
+
+
+
+
+
         # 2. Define call parameters
-        if prompt is not None and isinstance(prompt, str):
+        if prompt_1 is not None and isinstance(prompt_1, str):
             batch_size = 1
-        elif prompt is not None and isinstance(prompt, list):
-            batch_size = len(prompt)
+        elif prompt_1 is not None and isinstance(prompt_1, list):
+            batch_size = len(prompt_1)
         else:
             batch_size = prompt_embeds.shape[0]
+
+        if prompt_2 is not None and isinstance(prompt_2, str):
+            batch_size = 1
+        elif prompt_2 is not None and isinstance(prompt_2, list):
+            batch_size = len(prompt_2)
+        else:
+            batch_size = prompt_embeds.shape[0]
+
+
+
+
 
         device = self._execution_device
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
@@ -881,8 +914,22 @@ class AudioLDM2Pipeline(DiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        prompt_embeds, attention_mask, generated_prompt_embeds = self.encode_prompt(
-            prompt,
+        prompt_embeds_1, attention_mask_1, generated_prompt_embeds_1 = self.encode_prompt(
+            prompt_1,
+            device,
+            num_waveforms_per_prompt,
+            do_classifier_free_guidance,
+            negative_prompt,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            generated_prompt_embeds=generated_prompt_embeds,
+            negative_generated_prompt_embeds=negative_generated_prompt_embeds,
+            attention_mask=attention_mask,
+            negative_attention_mask=negative_attention_mask,
+            max_new_tokens=max_new_tokens,
+        )
+        prompt_embeds_2, attention_mask_2, generated_prompt_embeds_2 = self.encode_prompt(
+            prompt_2,
             device,
             num_waveforms_per_prompt,
             do_classifier_free_guidance,
@@ -896,6 +943,8 @@ class AudioLDM2Pipeline(DiffusionPipeline):
             max_new_tokens=max_new_tokens,
         )
 
+
+
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
@@ -906,7 +955,7 @@ class AudioLDM2Pipeline(DiffusionPipeline):
             batch_size * num_waveforms_per_prompt,
             num_channels_latents,
             height,
-            prompt_embeds.dtype,
+            prompt_embeds_1.dtype,
             device,
             generator,
             latents,
@@ -927,9 +976,12 @@ class AudioLDM2Pipeline(DiffusionPipeline):
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=generated_prompt_embeds,
-                    encoder_hidden_states_1=prompt_embeds,
-                    encoder_attention_mask_1=attention_mask,
+                    encoder_hidden_states_a=generated_prompt_embeds_1,
+                    encoder_hidden_states_1_a=prompt_embeds_1,
+                    encoder_attention_mask_1_a=attention_mask_1,
+                    encoder_hidden_states_b=generated_prompt_embeds_2,
+                    encoder_hidden_states_1_b=prompt_embeds_2,
+                    encoder_attention_mask_1_b=attention_mask_2,
                     return_dict=False,
                 )[0]
 
@@ -962,9 +1014,9 @@ class AudioLDM2Pipeline(DiffusionPipeline):
         audio = audio[:, :original_waveform_length]
 
         # 9. Automatic scoring
-        if num_waveforms_per_prompt > 1 and prompt is not None:
+        if num_waveforms_per_prompt > 1 and prompt_1 is not None:
             audio = self.score_waveforms(
-                text=prompt,
+                text=prompt_1,
                 audio=audio,
                 num_waveforms_per_prompt=num_waveforms_per_prompt,
                 device=device,
