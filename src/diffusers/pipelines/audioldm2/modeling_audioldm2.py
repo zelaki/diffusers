@@ -854,12 +854,12 @@ class AudioLDM2UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoad
             )
 
         # 5. up
-        for i, upsample_block in enumerate(self.up_blocks):
-            if idx <=1:
+        for idx, upsample_block in enumerate(self.up_blocks):
+            if idx <=2:
                 encoder_hidden_states = encoder_hidden_states_b
                 encoder_hidden_states_1 = encoder_hidden_states_1_b
                 encoder_attention_mask_1 = encoder_attention_mask_1_b
-            else: 
+        else: 
                 encoder_hidden_states = encoder_hidden_states_a
                 encoder_hidden_states_1 = encoder_hidden_states_1_a
                 encoder_attention_mask_1 = encoder_attention_mask_1_a
